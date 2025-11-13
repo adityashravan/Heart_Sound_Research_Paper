@@ -14,6 +14,11 @@ from pathlib import Path
 from scipy.io import wavfile
 from scipy import signal
 import pywt
+import matplotlib
+matplotlib.use('TkAgg')  # Use Tkinter backend
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
 class HeartSoundClassifier:
     def __init__(self, root):
@@ -120,8 +125,8 @@ class HeartSoundClassifier:
         # Browse file button
         self.browse_btn = tk.Button(
             btn_frame,
-            text="📁 Browse File",
-            font=("Arial", 11, "bold"),
+            text="📁 Browse\nFile",
+            font=("Arial", 10, "bold"),
             bg=self.primary_color,
             fg="white",
             activebackground="#1976D2",
@@ -137,8 +142,8 @@ class HeartSoundClassifier:
         # Dataset selection button
         self.dataset_btn = tk.Button(
             btn_frame,
-            text="📂 Pick from Dataset",
-            font=("Arial", 11, "bold"),
+            text="📂 Pick from\nDataset",
+            font=("Arial", 10, "bold"),
             bg=self.primary_color,
             fg="white",
             activebackground="#1976D2",
@@ -168,6 +173,24 @@ class HeartSoundClassifier:
             command=self.classify_audio
         )
         self.classify_btn.pack(pady=10)
+        
+        # Visualize waveform button
+        self.visualize_btn = tk.Button(
+            btn_frame,
+            text="📊 Show\nWaveform",
+            font=("Arial", 10, "bold"),
+            bg="#FF9800",
+            fg="white",
+            activebackground="#F57C00",
+            activeforeground="white",
+            width=13,
+            height=2,
+            relief=tk.RAISED,
+            bd=2,
+            state=tk.DISABLED,
+            command=self.show_waveform
+        )
+        self.visualize_btn.pack(pady=5)
         
         # Result frame
         result_frame = tk.Frame(self.root, bg="white", relief=tk.RIDGE, bd=2)
@@ -317,6 +340,7 @@ class HeartSoundClassifier:
         filename = os.path.basename(filepath)
         self.file_label.config(text=filename, fg="black")
         self.classify_btn.config(state=tk.NORMAL)
+        self.visualize_btn.config(state=tk.NORMAL)
         self.result_label.config(text="No prediction yet", fg="#666")
         self.confidence_label.config(text="")
         self.status_bar.config(text=f"Loaded: {filename}")
@@ -444,6 +468,128 @@ class HeartSoundClassifier:
         except Exception as e:
             messagebox.showerror("Error", f"Classification failed:\n{str(e)}")
             self.status_bar.config(text="Classification failed")
+    
+    def show_waveform(self):
+        """Display waveform visualization in a new window"""
+        if not self.current_file:
+            messagebox.showwarning("Warning", "Please select a file first!")
+            return
+        
+        try:
+            self.status_bar.config(text="Loading waveform...")
+            self.root.update()
+            
+            # Load raw audio
+            sr, audio = wavfile.read(self.current_file)
+            
+            # Convert to float32 if needed
+            if audio.dtype == np.int16:
+                audio = audio.astype(np.float32) / 32768.0
+            elif audio.dtype == np.int32:
+                audio = audio.astype(np.float32) / 2147483648.0
+            
+            # Handle stereo
+            if len(audio.shape) > 1:
+                audio = audio[:, 0]
+            
+            # Create time axis
+            duration = len(audio) / sr
+            time = np.linspace(0, duration, len(audio))
+            
+            # Also load preprocessed version
+            # Downsample to 1 kHz
+            target_sr = 1000
+            if sr != target_sr:
+                num_samples = int(len(audio) * target_sr / sr)
+                audio_processed = signal.resample(audio, num_samples)
+            else:
+                audio_processed = audio.copy()
+            
+            # High-pass filter
+            nyquist = target_sr / 2
+            normalized_cutoff = 20 / nyquist
+            b, a = signal.butter(4, normalized_cutoff, btype='high')
+            audio_filtered = signal.filtfilt(b, a, audio_processed)
+            
+            # Z-score normalization
+            mean = np.mean(audio_filtered)
+            std = np.std(audio_filtered)
+            if std > 0:
+                audio_normalized = (audio_filtered - mean) / std
+            else:
+                audio_normalized = audio_filtered
+            
+            # Trim to 3 seconds for processed version
+            target_length = 3000
+            if len(audio_normalized) > target_length:
+                audio_normalized = audio_normalized[:target_length]
+            
+            time_processed = np.linspace(0, len(audio_normalized) / target_sr, len(audio_normalized))
+            
+            # Create visualization window - sized for 320x480 LCD
+            viz_window = tk.Toplevel(self.root)
+            viz_window.title("Heart Sound")
+            viz_window.geometry("320x400")  # Fit within LCD display
+            viz_window.resizable(False, False)
+            
+            # Create figure with single plot - preprocessed signal only
+            fig = Figure(figsize=(3.2, 3.5), dpi=100)
+            
+            # Plot: Preprocessed Signal (what the model uses)
+            ax = fig.add_subplot(1, 1, 1)
+            ax.plot(time_processed, audio_normalized, color='#4CAF50', linewidth=1.2)
+            ax.set_title('Heart Sound (PCG)', fontsize=10, fontweight='bold')
+            ax.set_xlabel('Time (s)', fontsize=8)
+            ax.set_ylabel('Amplitude', fontsize=8)
+            ax.grid(True, alpha=0.3, linewidth=0.5)
+            ax.set_xlim([0, 3])
+            ax.tick_params(labelsize=7)
+            
+            fig.tight_layout(pad=0.5)
+            
+            # Embed plot in Tkinter window
+            canvas = FigureCanvasTkAgg(fig, master=viz_window)
+            canvas.draw()
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            
+            # Add info label - compact for small screen
+            info_frame = tk.Frame(viz_window, bg='#f0f0f0', pady=2)
+            info_frame.pack(side=tk.BOTTOM, fill='x')
+            
+            filename = os.path.basename(self.current_file)
+            # Truncate long filenames
+            if len(filename) > 25:
+                filename = filename[:22] + "..."
+            
+            info_text = f"{filename}\n{duration:.1f}s | {sr}Hz"
+            
+            info_label = tk.Label(
+                info_frame,
+                text=info_text,
+                font=("Arial", 7),
+                bg='#f0f0f0',
+                justify='center'
+            )
+            info_label.pack()
+            
+            # Add close button
+            close_btn = tk.Button(
+                viz_window,
+                text="Close",
+                command=viz_window.destroy,
+                font=("Arial", 9, "bold"),
+                bg="#f44336",
+                fg="white",
+                width=10,
+                height=1
+            )
+            close_btn.pack(side=tk.BOTTOM, pady=3)
+            
+            self.status_bar.config(text="Waveform displayed")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Visualization failed:\n{str(e)}")
+            self.status_bar.config(text="Visualization failed")
 
 def main():
     root = tk.Tk()
